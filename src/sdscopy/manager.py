@@ -7,6 +7,7 @@ from itertools import groupby
 from pathlib import Path
 
 from pydantic import BaseModel, Field, field_validator
+from rich.progress import track
 
 from sdscopy.client import DownloadChannel, FDSNClient
 from sdscopy.utils import _NSL, NSL, date_today
@@ -122,9 +123,16 @@ class FDSNDownloadManager(BaseModel):
 
                 date += timedelta(days=1)
 
-        for channel in chunks.copy():
+        i_downloaded = 0
+        for channel in track(chunks.copy(), description="Checking archive..."):
             if self.writer.has_channel(channel):
                 chunks.remove(channel)
+                i_downloaded += 1
+        logger.info(
+            "Found %d channels to download, %d channels already downloaded",
+            len(chunks),
+            i_downloaded,
+        )
 
         return chunks
 
