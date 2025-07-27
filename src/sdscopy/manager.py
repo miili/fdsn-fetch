@@ -112,11 +112,10 @@ class FDSNDownloadManager(BaseModel):
                             DownloadChannel(channel=channel, date=date)
                         )
                     if len(station_chunks) < self.min_channels_per_station:
-                        logger.warning(
-                            "Station %s has only %d channels, which is below the minimum %d",
-                            station.nsl,
+                        logger.debug(
+                            "Station %s has only %d channels",
+                            station.nsl.pretty,
                             len(station_chunks),
-                            self.min_channels_per_station,
                         )
                         continue
                     chunks.extend(station_chunks)
