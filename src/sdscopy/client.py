@@ -333,7 +333,6 @@ class FDSNClient(BaseModel):
                     date,
                     e.code,
                 )
-                logger.warning(channel)
                 return
 
             start_time = time.time()
