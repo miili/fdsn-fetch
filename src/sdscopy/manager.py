@@ -21,7 +21,7 @@ class FDSNDownloadManager(BaseModel):
         description="Writer for storing downloaded SDS data",
     )
     metadata: Path = Field(
-        default=Path("metadata/"),
+        default=Path("./metadata/"),
         description="Path to store downloaded metadata",
     )
     time_range: tuple[date, date] = Field(

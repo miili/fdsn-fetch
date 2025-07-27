@@ -245,7 +245,11 @@ class FDSNClient(BaseModel):
             data = await response.text()
             self.available_stations = parse_stations(data)
 
-        logger.info("Got %d stations from %s", self._stats.n_stations, self.url)
+        logger.info(
+            "Got %d stations from %s",
+            self.available_stations.n_stations,
+            self.url,
+        )
 
     async def download_metadata(
         self,

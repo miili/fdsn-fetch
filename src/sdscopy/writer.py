@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 class SDSWriter(BaseModel):
     base_path: Path = Field(
-        default=Path("data/"),
+        default=Path("./data/"),
         description="Base path for storing SDS data",
     )
 
