@@ -1,0 +1,43 @@
+[project]
+name = "sdscopy"
+version = "0.1.0"
+description = "A tool for downloading FDSN archive data to local SDS structure."
+readme = "README.md"
+authors = [{ name = "miili", email = "marius.isken@gfz.de" }]
+requires-python = ">=3.13"
+dependencies = [
+    "aiohttp>=3.12.14",
+    "pydantic>=2.11.7",
+    "pyrocko>=2025.1.21",
+    "pytest-asyncio>=1.1.0",
+    "rich>=14.1.0",
+    "typer>=0.16.0",
+]
+
+[project.scripts]
+sdscopy = "sdscopy.app:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = ["pre-commit>=4.2.0", "pytest>=8.4.1", "ruff>=0.12.5"]
+
+
+[tool.ruff.lint]
+extend-select = [
+    'W',
+    'N',
+    'DTZ',
+    'FA',
+    'G',
+    'RET',
+    'SIM',
+    'B',
+    'RET',
+    'C4',
+    'I',
+    'RUF',
+    'T20',
+]
