@@ -327,12 +327,13 @@ class FDSNClient(BaseModel):
                 response.raise_for_status()
             except aiohttp.ClientResponseError as e:
                 logger.error(
-                    "Failed to download data for %s.%s on %s: %s",
+                    "Failed to download %s.%s for %s: %s",
                     channel.nsl.pretty,
                     channel.code,
                     date,
                     e.code,
                 )
+                logger.warning(channel)
                 return
 
             start_time = time.time()
@@ -369,7 +370,7 @@ class FDSNClient(BaseModel):
                         await writer.add_data(download, data)
                 except TimeoutError:
                     logger.error(
-                        "Timeout: Failed to download data for %s.%s on %s",
+                        "Timeout: Failed to download %s.%s for %s",
                         download.channel.nsl.pretty,
                         download.channel.code,
                         download.date,
