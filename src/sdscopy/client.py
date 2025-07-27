@@ -300,15 +300,15 @@ class FDSNClient(BaseModel):
     async def download_waveform_data(
         self,
         client: aiohttp.ClientSession,
-        station_channel: Channel,
+        channel: Channel,
         date: date,
     ) -> AsyncGenerator[bytes, None]:
         """Fetch waveform data for a specific channel on a given date."""
         params = {
-            "network": station_channel.nsl.network,
-            "station": station_channel.nsl.station,
-            "location": station_channel.nsl.location,
-            "channel": station_channel.code,
+            "network": channel.nsl.network,
+            "station": channel.nsl.station,
+            "location": channel.nsl.location,
+            "channel": channel.code,
             "starttime": date.isoformat(),
             "endtime": (date + timedelta(days=1)).isoformat(),
             "format": "mseed",
@@ -323,7 +323,16 @@ class FDSNClient(BaseModel):
             self._stats.download_stats() as download,
         ):
             self._stats.n_requests += 1
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except aiohttp.ClientResponseError as e:
+                logger.error(
+                    "Failed to download data for %s.%s: %s",
+                    channel.nsl.pretty,
+                    channel.code,
+                    e.message,
+                )
+                return
 
             start_time = time.time()
             async for chunk in response.content.iter_chunked(self.chunk_length):
@@ -353,7 +362,7 @@ class FDSNClient(BaseModel):
                 try:
                     async for data in self.download_waveform_data(
                         client=client,
-                        station_channel=download.channel,
+                        channel=download.channel,
                         date=download.date,
                     ):
                         await writer.add_data(download, data)

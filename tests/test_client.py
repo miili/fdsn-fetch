@@ -13,7 +13,7 @@ async def test_client():
     assert client.n_station() > 0
 
     async for data in client.download_waveform_data(
-        station_channel=client.available_stations[0].channels[0],
+        channel=client.available_stations[0].channels[0],
         date=date_today(),
     ):
         assert isinstance(data, bytes)

@@ -123,16 +123,21 @@ class FDSNDownloadManager(BaseModel):
 
                 date += timedelta(days=1)
 
+        logger.info("Discovered %d remote dayfiles", len(chunks))
         i_downloaded = 0
-        for channel in track(chunks.copy(), description="Checking archive..."):
+        for channel in track(chunks.copy(), description="Checking SDS archive..."):
             if self.writer.has_channel(channel):
                 chunks.remove(channel)
                 i_downloaded += 1
-        logger.info(
-            "Found %d channels to download, %d channels already downloaded",
-            len(chunks),
-            i_downloaded,
-        )
+
+        if i_downloaded > 0:
+            logger.info(
+                "Found %d dayfiles already downloaded in the archive",
+                len(chunks),
+                i_downloaded,
+            )
+
+        logger.info("Found %d dayfiles to download", len(chunks))
 
         return chunks
 
