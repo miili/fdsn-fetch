@@ -14,7 +14,7 @@ from sdscopy.stats import live_view
 
 FORMAT = "%(message)s"
 logging.basicConfig(
-    level="DEBUG", format=FORMAT, datefmt="[%X]", handlers=[RichHandler()]
+    level="INFO", format=FORMAT, datefmt="[%X]", handlers=[RichHandler()]
 )
 
 app = typer.Typer()
@@ -36,9 +36,16 @@ def download(
             help="Path to the configuration file",
         ),
     ],
+    verbose: Annotated[int, typer.Option("--verbose", "-v", count=True)] = 0,
 ) -> None:
     """Download data based on the provided configuration file."""
     client = FDSNDownloadManager.model_validate_json(file.read_text())
+
+    log_level = logging.INFO
+    if verbose >= 1:
+        log_level = logging.DEBUG
+
+    logging.basicConfig(level=log_level)
 
     async def run_download() -> None:
         download = asyncio.create_task(client.download())
