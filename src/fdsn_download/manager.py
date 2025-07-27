@@ -9,9 +9,9 @@ from pathlib import Path
 from pydantic import BaseModel, Field, field_validator
 from rich.progress import track
 
-from sdscopy.client import DownloadChannel, FDSNClient
-from sdscopy.utils import _NSL, NSL, date_today
-from sdscopy.writer import SDSWriter
+from fdsn_download.client import DownloadChannel, FDSNClient
+from fdsn_download.utils import _NSL, NSL, date_today
+from fdsn_download.writer import SDSWriter
 
 logger = logging.getLogger(__name__)
 
@@ -101,8 +101,8 @@ class FDSNDownloadManager(BaseModel):
 
             date = self.time_range[0]
             while date <= self.time_range[1]:
-                station_chunks = []
                 for channel_selector in self.channel_selection:
+                    station_chunks = []
                     for channel in station.get_channels(
                         date,
                         channel_selector,
@@ -120,6 +120,7 @@ class FDSNDownloadManager(BaseModel):
                         )
                         continue
                     chunks.extend(station_chunks)
+                    break
 
                 date += timedelta(days=1)
 
@@ -138,7 +139,7 @@ class FDSNDownloadManager(BaseModel):
         logger.info("Found %d dayfiles to download", len(chunks_download))
         return chunks_download
 
-    async def _download_client(self, client: FDSNClient):
+    async def _download_client(self, client: FDSNClient, writer: SDSWriter):
         """Download data for the specified client."""
         work = self.get_work(client)
         if not work:
@@ -148,16 +149,18 @@ class FDSNDownloadManager(BaseModel):
         for channel in work:
             await client.add_work(channel)
 
-        await client.download(self.writer)
+        await client.download(writer)
 
     async def download(self):
         """Download data using all configured clients."""
         await self.prepare()
 
+        writer_task = asyncio.create_task(self.writer.start())
         async with asyncio.TaskGroup() as tg:
             for client in self.clients:
-                tg.create_task(self._download_client(client))
+                tg.create_task(self._download_client(client, self.writer))
         logger.info("All downloads completed successfully.")
+        writer_task.cancel()
         await self.download_metadata()
 
     async def download_metadata(self):

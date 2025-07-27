@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from sdscopy.manager import FDSNDownloadManager
+from fdsn_download.manager import FDSNDownloadManager
 
 
 @pytest.mark.asyncio

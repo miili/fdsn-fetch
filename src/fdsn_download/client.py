@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
-from collections import defaultdict
-from contextlib import asynccontextmanager
+from collections import defaultdict, deque
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncGenerator, NamedTuple
@@ -13,16 +11,18 @@ import aiohttp
 from pydantic import BaseModel, ByteSize, Field, HttpUrl, PrivateAttr, computed_field
 from rich.progress import Progress, TaskID
 
-from sdscopy.models.station import Channel, Stations, parse_stations
-from sdscopy.stats import Stats
-from sdscopy.utils import NSL, human_readable_bytes
+from fdsn_download.models.station import Channel, Stations, parse_stations
+from fdsn_download.stats import Stats
+from fdsn_download.utils import NSL, human_readable_bytes
 
 if TYPE_CHECKING:
     from rich.table import Table
 
-    from sdscopy.writer import SDSWriter
+    from fdsn_download.writer import SDSWriter
 
 logger = logging.getLogger(__name__)
+
+MB = 1024 * 1024
 
 
 def _clean_params(params: dict[str, Any]) -> None:
@@ -52,15 +52,16 @@ class FDSNDownloadStats(BaseModel):
         default=0.0,
         description="Current download speed in bytes per second",
     )
-    n_bytes: ByteSize = Field(
-        default=ByteSize(0),
+    n_bytes: int = Field(
+        default=0,
         description="Total number of bytes downloaded",
     )
 
     def add_chunk(self, n_bytes: int, elapsed_time: float) -> None:
         """Add a measurement to the download statistics."""
         self.n_bytes += n_bytes
-        self.download_speed = n_bytes / elapsed_time if elapsed_time > 0 else 0.0
+        print(f"Chunk size: {n_bytes} bytes, Elapsed time: {elapsed_time:.6f} seconds")
+        self.download_speed = n_bytes / elapsed_time
 
 
 class FDSNClientStats(Stats):
@@ -70,13 +71,9 @@ class FDSNClientStats(Stats):
         default=0,
         description="Number of requests made to the FDSN service",
     )
-    n_bytes_downloaded: ByteSize = Field(
-        default=ByteSize(0),
+    n_bytes_downloaded: int = Field(
+        default=0,
         description="Total number of bytes downloaded from the FDSN service",
-    )
-    downloads: list[FDSNDownloadStats] = Field(
-        default_factory=list,
-        description="List of download sessions with their statistics",
     )
     n_chunks_total: int = Field(
         default=0,
@@ -93,6 +90,9 @@ class FDSNClientStats(Stats):
     _client: FDSNClient | None = PrivateAttr(None)
     _progress: Progress = PrivateAttr(default_factory=Progress)
     _task_id: TaskID | None = PrivateAttr(None)
+    _received_chunks: deque[tuple[float, int]] = PrivateAttr(
+        default_factory=lambda: deque(maxlen=200)
+    )
 
     def set_client(self, client: FDSNClient) -> None:
         """Set the FDSN client for this statistics instance."""
@@ -108,12 +108,15 @@ class FDSNClientStats(Stats):
             start=True,
         )
 
-    def add_work(self, channel: DownloadChannel) -> None:
+    def add_download_chunk(self, n_bytes: int, time: float) -> None:
+        self._received_chunks.append((time, n_bytes))
+
+    def add_chunk(self, channel: DownloadChannel) -> None:
         """Add a work item to the statistics."""
         self._station_work_count[channel.channel.nsl] += 1
         self.n_chunks_total += 1
 
-    def done_work(self, channel: DownloadChannel) -> None:
+    def done_chunk(self, channel: DownloadChannel) -> None:
         """Mark a work item as done."""
         self._station_work_count[channel.channel.nsl] -= 1
         self.n_completed += 1
@@ -130,27 +133,32 @@ class FDSNClientStats(Stats):
         """Return the number of unique stations that have completed downloads."""
         return sum(1 for count in self._station_work_count.values() if count == 0)
 
-    @computed_field
-    @property
-    def download_speed(self) -> ByteSize:
+    def get_download_speed(self, seconds: float = 10.0) -> ByteSize:
         """Calculate the average download speed across all downloads."""
-        if not self.downloads:
-            return ByteSize(0.0)
-        return ByteSize(sum(download.download_speed for download in self.downloads))
+        ref_time = asyncio.get_running_loop().time()
+        measurements = [
+            (time, n_bytes)
+            for time, n_bytes in self._received_chunks
+            if time >= (ref_time - seconds)
+        ]
+        if not measurements:
+            return ByteSize(0)
+        total_bytes = sum(n_bytes for _, n_bytes in measurements)
+        first_time = measurements[0][0]
+        return ByteSize(total_bytes / (ref_time - first_time))
 
     def _render(self, table: Table) -> None:
         """Render the statistics as a string."""
         if self._task_id is not None:
             self._progress.update(
                 self._task_id,
-                description=f"{human_readable_bytes(self.n_bytes_downloaded)}",
                 completed=self.n_completed,
+                description=f"{human_readable_bytes(self.n_bytes_downloaded, True)}",
             )
-        n_workers = len(self.downloads)
         table.add_row(
             "Server",
-            f"[bold]{self._client.url if self._client else 'N/A'}[/bold] -"
-            f" {n_workers} workers @ {self.download_speed.human_readable()}/s",
+            f"[bold]{self._client.url if self._client else 'N/A'}[/bold]"
+            f" ↓{self.get_download_speed().human_readable()}/s",
         )
         table.add_row(
             "Stations",
@@ -160,16 +168,6 @@ class FDSNClientStats(Stats):
             "Progress",
             self._progress,
         )
-
-    @asynccontextmanager
-    async def download_stats(self):
-        """Context manager to add a download session."""
-        download = FDSNDownloadStats()
-        self.downloads.append(download)
-        try:
-            yield download
-        finally:
-            self.downloads.remove(download)
 
 
 class FDSNClient(BaseModel):
@@ -183,6 +181,8 @@ class FDSNClient(BaseModel):
     )
     max_connections: int = Field(
         default=8,
+        ge=1,
+        le=64,
         description="Maximum number of concurrent connections",
     )
 
@@ -191,8 +191,9 @@ class FDSNClient(BaseModel):
         description="List of stations fetched from the FDSN service",
     )
 
-    chunk_length: int = Field(
-        default=4096,
+    chunk_size: int = Field(
+        default=4 * MB,
+        ge=1 * MB,
         description="Length of data chunks to download in bytes",
     )
 
@@ -241,6 +242,7 @@ class FDSNClient(BaseModel):
                 params=params,
             ) as response,
         ):
+            logger.debug("Fetching available stations from %s", response.url)
             response.raise_for_status()
             data = await response.text()
             self.available_stations = parse_stations(data)
@@ -315,19 +317,19 @@ class FDSNClient(BaseModel):
             "nodata": "404",
         }
         _clean_params(params)
-        async with (
-            client.get(
-                "/fdsnws/dataselect/1/query",
-                params=params,
-            ) as response,
-            self._stats.download_stats() as download,
-        ):
+        loop = asyncio.get_running_loop()
+
+        async with client.get(
+            "/fdsnws/dataselect/1/query",
+            params=params,
+            compress=True,
+        ) as response:
             self._stats.n_requests += 1
             try:
                 response.raise_for_status()
             except aiohttp.ClientResponseError as e:
                 logger.error(
-                    "Failed to download %s.%s for %s: %s",
+                    "Failed to download %s.%s for %s: %s error",
                     channel.nsl.pretty,
                     channel.code,
                     date,
@@ -335,19 +337,17 @@ class FDSNClient(BaseModel):
                 )
                 return
 
-            start_time = time.time()
-            async for chunk in response.content.iter_chunked(self.chunk_length):
-                yield chunk
+            async for chunk in response.content.iter_chunked(self.chunk_size):
+                chunk_size = len(chunk)
+                self._stats.n_bytes_downloaded += chunk_size
+                self._stats.add_download_chunk(chunk_size, loop.time())
 
-                chunk_length = len(chunk)
-                self._stats.n_bytes_downloaded += chunk_length
-                download.add_chunk(chunk_length, time.time() - start_time)
-                start_time = time.time()
+                yield chunk
 
     async def add_work(self, download: DownloadChannel) -> None:
         """Add a download task to the work queue."""
         await self._work_queue.put(download)
-        self._stats.add_work(download)
+        self._stats.add_chunk(download)
 
     async def download(self, writer: SDSWriter) -> None:
         """Download data from the FDSN service."""
@@ -366,17 +366,17 @@ class FDSNClient(BaseModel):
                         channel=download.channel,
                         date=download.date,
                     ):
-                        await writer.add_data(download, data)
+                        writer.add_data(download, data)
                 except TimeoutError:
                     logger.error(
-                        "Timeout: Failed to download %s.%s for %s",
+                        "Failed to download %s.%s for %s: Remote timeout",
                         download.channel.nsl.pretty,
                         download.channel.code,
                         download.date,
                     )
                     continue
                 writer.done(download)
-                self._stats.done_work(download)
+                self._stats.done_chunk(download)
 
                 self._work_queue.task_done()
 
@@ -385,10 +385,12 @@ class FDSNClient(BaseModel):
             self.url,
             self.max_connections,
         )
+
         try:
             client = aiohttp.ClientSession(
                 base_url=str(self.url),
                 timeout=aiohttp.ClientTimeout(total=self.timeout),
+                auto_decompress=True,
                 headers={"User-Agent": "SDSCopyClient/1.0"},
             )
             async with asyncio.TaskGroup() as tg:

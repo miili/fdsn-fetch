@@ -1,8 +1,8 @@
 import pytest
 from pydantic import HttpUrl
 
-from sdscopy.client import FDSNClient
-from sdscopy.utils import _NSL, date_today
+from fdsn_download.client import FDSNClient
+from fdsn_download.utils import _NSL, date_today
 
 
 @pytest.mark.asyncio

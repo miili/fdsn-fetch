@@ -1,5 +1,5 @@
 [project]
-name = "sdscopy"
+name = "fdsn-download"
 version = "0.1.0"
 description = "A tool for downloading FDSN archive data to local SDS structure."
 readme = "README.md"
@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
-sdscopy = "sdscopy.app:main"
+fdsn-download = "fdsn_download.app:main"
 
 [build-system]
 requires = ["hatchling"]
