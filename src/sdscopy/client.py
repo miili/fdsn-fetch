@@ -327,9 +327,10 @@ class FDSNClient(BaseModel):
                 response.raise_for_status()
             except aiohttp.ClientResponseError as e:
                 logger.error(
-                    "Failed to download data for %s.%s: %s",
+                    "Failed to download data for %s.%s on %s: %s",
                     channel.nsl.pretty,
                     channel.code,
+                    date,
                     e.code,
                 )
                 return
