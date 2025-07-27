@@ -359,8 +359,9 @@ class FDSNClient(BaseModel):
                         await writer.add_data(download, data)
                 except TimeoutError:
                     logger.error(
-                        "Timeout: Failed to download data for %s on %s",
+                        "Timeout: Failed to download data for %s.%s on %s",
                         download.channel.nsl.pretty,
+                        download.channel.code,
                         download.date,
                     )
                     continue
