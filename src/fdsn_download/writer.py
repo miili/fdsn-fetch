@@ -6,14 +6,51 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field, PrivateAttr
+from rich.progress import track
 
-from fdsn_download.client import DownloadChannel
+from fdsn_download.client import DownloadChunk
+from fdsn_download.stats import Stats
+from fdsn_download.utils import datetime_now, human_readable_bytes
 
 if TYPE_CHECKING:
     from pyrocko.squirrel import Squirrel
+    from rich.table import Table
 
 
 logger = logging.getLogger(__name__)
+
+
+class SDSWriterStats(Stats):
+    _pos: int = 10
+
+    total_files_saved: int = Field(
+        default=0,
+        title="Total Files Written",
+        description="Total number of files written to disk",
+    )
+    total_bytes_written: int = Field(
+        default=0,
+        title="Total Bytes Written",
+        description="Total number of bytes written to disk",
+    )
+    archive_size: int = Field(
+        default=0,
+        title="Archive Size",
+        description="Total size of the archive in bytes",
+    )
+
+    def _render(self, table: Table) -> None:
+        """Render the statistics as a string."""
+        table.add_row(
+            "SDS Archive",
+            human_readable_bytes(self.archive_size),
+            style="dim",
+        )
+        table.add_row(
+            "Dayfiles saved",
+            f"{self.total_files_saved} ({human_readable_bytes(self.total_bytes_written)})",
+            style="dim",
+        )
 
 
 class SDSWriter(BaseModel):
@@ -27,21 +64,22 @@ class SDSWriter(BaseModel):
         description="Path to the Squirrel environment, if applicable",
     )
 
-    _consume_queue: asyncio.Queue[tuple[DownloadChannel, bytes | None]] = PrivateAttr(
+    _stats: SDSWriterStats = PrivateAttr(default_factory=SDSWriterStats)
+    _consume_queue: asyncio.Queue[tuple[DownloadChunk, bytes | None]] = PrivateAttr(
         default_factory=asyncio.Queue
     )
     _squirrel: Squirrel | None = PrivateAttr(default=None)
 
-    def has_channel(self, channel: DownloadChannel) -> bool:
+    def has_channel(self, channel: DownloadChunk) -> bool:
         """Check if data for the given channel and date already exists."""
         file_path = self.base_path / channel.sds_path()
         return file_path.exists()
 
-    def add_data(self, channel: DownloadChannel, data: bytes) -> None:
+    def add_data(self, channel: DownloadChunk, data: bytes) -> None:
         """Add a channel to the download queue."""
         self._consume_queue.put_nowait((channel, data))
 
-    def done(self, channel: DownloadChannel) -> None:
+    def done(self, channel: DownloadChunk) -> None:
         """Mark the download for the channel as done."""
         self._consume_queue.put_nowait((channel, None))
 
@@ -52,7 +90,7 @@ class SDSWriter(BaseModel):
             self._squirrel = Squirrel(env=str(self.squirrel_environment))
         return self._squirrel
 
-    async def _add_data(self, channel: DownloadChannel, data: bytes) -> None:
+    async def _add_data(self, channel: DownloadChunk, data: bytes) -> None:
         """Write the downloaded data to the SDS path."""
         file_path = self.base_path / channel.sds_path(partial=True)
         file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -60,15 +98,26 @@ class SDSWriter(BaseModel):
         with open(file_path, "ab") as file:
             await asyncio.to_thread(file.write, data)
 
-    def _done(self, channel: DownloadChannel) -> None:
+    def _done(self, chunk: DownloadChunk) -> None:
         """Finalize the download for the channel."""
-        partial_file_path = self.base_path / channel.sds_path(partial=True)
+        partial_file_path = self.base_path / chunk.sds_path(partial=True)
         if not partial_file_path.exists():
             return
 
-        file_path = self.base_path / channel.sds_path()
+        file_path = self.base_path / chunk.sds_path()
         partial_file_path.rename(file_path)
-        logger.info("Downloaded %s", file_path)
+        file_size = file_path.stat().st_size
+
+        logger.info(
+            "Finished %s.%s for %s (%s in %s)",
+            chunk.channel.nsl.pretty,
+            chunk.channel.code,
+            chunk.date,
+            human_readable_bytes(file_size),
+            datetime_now() - chunk.start_time if chunk.start_time else "unknown",
+        )
+        self._stats.total_files_saved += 1
+        self._stats.total_bytes_written += file_size
 
         if self.squirrel_environment is not None:
             squirrel = self.get_squirrel()
@@ -86,9 +135,25 @@ class SDSWriter(BaseModel):
         except asyncio.CancelledError:
             logger.info("SDSWriter stopped.")
 
-    def clean_partial_files(self) -> None:
+    async def prepare(self) -> None:
         """Remove any partial files that may exist."""
         logger.debug("Cleaning up partial files in %s", self.base_path)
         for file in self.base_path.glob("**/*.partial"):
             file.unlink()
             logger.warning("Removed partial file %s", file)
+
+        for i_file, file in track(
+            enumerate(self.base_path.glob("**/*.[0-9]*")),
+            description="Scanning archive...",
+            show_speed=False,
+        ):
+            file_size = file.stat().st_size
+            if file_size == 0:
+                file.unlink()
+                logger.warning("Removed empty file %s", file)
+                continue
+
+            self._stats.archive_size += file_size
+
+            if i_file % 500 == 0:
+                await asyncio.sleep(0.0)

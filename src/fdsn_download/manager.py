@@ -2,18 +2,42 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from itertools import groupby
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, PrivateAttr, field_validator
 from rich.progress import track
 
-from fdsn_download.client import DownloadChannel, FDSNClient
-from fdsn_download.utils import _NSL, NSL, date_today
+from fdsn_download.client import DownloadChunk, FDSNClient
+from fdsn_download.stats import Stats
+from fdsn_download.utils import _NSL, NSL, date_today, datetime_now
 from fdsn_download.writer import SDSWriter
 
+if TYPE_CHECKING:
+    from rich.table import Table
+
 logger = logging.getLogger(__name__)
+
+
+class FDSNDownloadManagerStats(Stats):
+    _pos: int = 0
+
+    start_time: datetime | None = Field(
+        default=None,
+        title="Start Time",
+        description="Time when the download started",
+    )
+
+    def _render(self, table: Table) -> None:
+        """Render the statistics as a string."""
+        if self.start_time:
+            elapsed_time = str(datetime_now() - self.start_time).split(".")[0]
+        else:
+            elapsed_time = "waiting..."
+
+        table.add_row("Time elapsed", elapsed_time)
 
 
 class FDSNDownloadManager(BaseModel):
@@ -58,6 +82,10 @@ class FDSNDownloadManager(BaseModel):
         description="List of NSL selections for stations to exclude from download",
     )
 
+    _stats: FDSNDownloadManagerStats = PrivateAttr(
+        default_factory=FDSNDownloadManagerStats
+    )
+
     @field_validator("time_range")
     @classmethod
     def validate_time_range(cls, value: tuple[date, date]) -> tuple[date, date]:
@@ -76,7 +104,9 @@ class FDSNDownloadManager(BaseModel):
                 self.time_range[1],
             )
 
-        self.writer.clean_partial_files()
+        await self.writer.prepare()
+
+        self._stats.start_time = datetime_now()
 
     def get_available_stations(self) -> list[NSL]:
         """Get a list of available stations based on the selection and blacklist."""
@@ -90,8 +120,8 @@ class FDSNDownloadManager(BaseModel):
                 available_stations.append(station.nsl)
         return available_stations
 
-    def get_work(self, client: FDSNClient) -> list[DownloadChannel]:
-        chunks: list[DownloadChannel] = []
+    def get_work(self, client: FDSNClient) -> list[DownloadChunk]:
+        chunks: list[DownloadChunk] = []
 
         for station in client.available_stations:
             if not any(nsl.match(station.nsl) for nsl in self.station_selection):
@@ -100,7 +130,7 @@ class FDSNDownloadManager(BaseModel):
                 continue
 
             date = self.time_range[0]
-            while date <= self.time_range[1]:
+            while date + timedelta(days=1) <= self.time_range[1]:
                 for channel_selector in self.channel_selection:
                     station_chunks = []
                     for channel in station.get_channels(
@@ -109,9 +139,7 @@ class FDSNDownloadManager(BaseModel):
                         self.min_sampling_rate,
                         self.max_sampling_rate,
                     ):
-                        station_chunks.append(
-                            DownloadChannel(channel=channel, date=date)
-                        )
+                        station_chunks.append(DownloadChunk(channel=channel, date=date))
                     if len(station_chunks) < self.min_channels_per_station:
                         logger.debug(
                             "Station %s has only %d channels",

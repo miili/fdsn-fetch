@@ -19,13 +19,13 @@ async def live_view() -> NoReturn:
     def generate_grid() -> Table:
         """Make a new table."""
         table = Table(show_header=False, box=None, expand=True)
-        stats_instances = STATS_INSTANCES.values()
+        stats_instances = sorted(STATS_INSTANCES.values(), key=lambda x: x._pos)
         for stats in stats_instances:
             table.add_section()
             stats._render(table)
 
         grid = Table.grid(expand=True)
-        grid.add_row(Panel(table, title="SDSCopy"))
+        grid.add_row(Panel(table, title="FDSN Download"))
         return grid
 
     with Live(
@@ -41,6 +41,8 @@ async def live_view() -> NoReturn:
 
 
 class Stats(BaseModel):
+    _pos: int = 10
+
     def _render(self, table: Table) -> None:
         """Render the statistics as a string."""
         for name, field in self.iter_fields():
