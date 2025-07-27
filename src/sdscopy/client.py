@@ -350,12 +350,20 @@ class FDSNClient(BaseModel):
             while not self._work_queue.empty():
                 download = await self._work_queue.get()
 
-                async for data in self.download_waveform_data(
-                    client=client,
-                    station_channel=download.channel,
-                    date=download.date,
-                ):
-                    await writer.add_data(download, data)
+                try:
+                    async for data in self.download_waveform_data(
+                        client=client,
+                        station_channel=download.channel,
+                        date=download.date,
+                    ):
+                        await writer.add_data(download, data)
+                except TimeoutError:
+                    logger.error(
+                        "Timeout: Failed to download data for %s on %s",
+                        download.channel.nsl.pretty,
+                        download.date,
+                    )
+                    continue
                 writer.done(download)
                 self._stats.done_work(download)
 
