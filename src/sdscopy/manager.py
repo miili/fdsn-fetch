@@ -111,9 +111,15 @@ class FDSNDownloadManager(BaseModel):
                         station_chunks.append(
                             DownloadChannel(channel=channel, date=date)
                         )
-                    if len(station_chunks) >= self.min_channels_per_station:
-                        chunks.extend(station_chunks)
-                        break
+                    if len(station_chunks) < self.min_channels_per_station:
+                        logger.warning(
+                            "Station %s has only %d channels, which is below the minimum %d",
+                            station.nsl,
+                            len(station_chunks),
+                            self.min_channels_per_station,
+                        )
+                        continue
+                    chunks.extend(station_chunks)
 
                 date += timedelta(days=1)
 
