@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime
 from fnmatch import fnmatch
 from itertools import groupby
@@ -8,6 +9,8 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from sdscopy.utils import _NSL, AUX_CHANNELS, DATETIME_MAX, NSL
+
+logger = logging.getLogger(__name__)
 
 SDS_TEMPLATE: str = (
     "{year}/{network}/{station}/{channel}.D/"
@@ -153,8 +156,20 @@ class Station(BaseModel):
             if not channel.matches(channel_selector):
                 continue
             if min_sampling_rate and channel.sampling_rate < min_sampling_rate:
+                logger.warning(
+                    "Channel %s has sampling rate %.2f, which is below the minimum %.2f",
+                    channel.code,
+                    channel.sampling_rate,
+                    min_sampling_rate,
+                )
                 continue
             if max_sampling_rate and channel.sampling_rate > max_sampling_rate:
+                logger.warning(
+                    "Channel %s has sampling rate %.2f, which is above the maximum %.2f",
+                    channel.code,
+                    channel.sampling_rate,
+                    max_sampling_rate,
+                )
                 continue
             channels.append(channel)
         return channels
