@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "A tool for downloading FDSN archive data to local SDS structure."
 readme = "README.md"
 authors = [{ name = "miili", email = "marius.isken@gfz.de" }]
-requires-python = ">=3.13"
+requires-python = ">=3.10"
 dependencies = [
     "aiohttp>=3.12.14",
     "pydantic>=2.11.7",
