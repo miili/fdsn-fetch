@@ -330,7 +330,7 @@ class FDSNClient(BaseModel):
                     "Failed to download data for %s.%s: %s",
                     channel.nsl.pretty,
                     channel.code,
-                    e.message,
+                    e,
                 )
                 return
 
