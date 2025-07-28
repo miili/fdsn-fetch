@@ -12,7 +12,7 @@ from rich.progress import track
 
 from fdsn_download.client import DownloadChunk, FDSNClient
 from fdsn_download.stats import Stats
-from fdsn_download.utils import _NSL, NSL, date_today, datetime_now
+from fdsn_download.utils import _NSL, NSL, Date, date_today, datetime_now
 from fdsn_download.writer import SDSWriter
 
 if TYPE_CHECKING:
@@ -45,17 +45,29 @@ class FDSNDownloadManager(BaseModel):
         default_factory=SDSWriter,
         description="Writer for storing downloaded SDS data",
     )
-    metadata: Path = Field(
+    clients: list[FDSNClient] = Field(
+        default_factory=lambda: [FDSNClient()],
+        description="List of FDSN clients for downloading data",
+    )
+    metadata_path: Path = Field(
         default=Path("./metadata/"),
         description="Path to store downloaded metadata",
     )
-    time_range: tuple[date, date] = Field(
-        default_factory=lambda: (date_today() - +timedelta(days=7), date_today()),
+    time_range: tuple[Date, Date] = Field(
+        default_factory=lambda: (date_today() - timedelta(days=7), date_today()),
         description="Time range for downloading data",
     )
-    channel_selection: list[str] = Field(
-        default=["HH[ZNE12]"],
+    station_selection: set[NSL] = Field(
+        default={_NSL("2D", "", "")},
+        description="List of NSL selections for stations to download",
+    )
+    channel_priorities: set[str] = Field(
+        default={"HH[ZNE12]", "EH[ZNE12]"},
         description="List of channel codes to download",
+    )
+    station_blacklist: set[NSL] = Field(
+        default_factory=set,
+        description="List of NSL selections for stations to exclude from download",
     )
     min_channels_per_station: int = Field(
         default=3,
@@ -68,18 +80,6 @@ class FDSNDownloadManager(BaseModel):
     max_sampling_rate: float = Field(
         default=200.0,
         description="Maximum sampling rate for channels to be downloaded",
-    )
-    clients: list[FDSNClient] = Field(
-        default_factory=lambda: [FDSNClient()],
-        description="List of FDSN clients for downloading data",
-    )
-    station_selection: list[NSL] = Field(
-        default=[_NSL("2D", "", "")],
-        description="List of NSL selections for stations to download",
-    )
-    station_blacklist: list[NSL] = Field(
-        default_factory=list,
-        description="List of NSL selections for stations to exclude from download",
     )
 
     _stats: FDSNDownloadManagerStats = PrivateAttr(
@@ -103,7 +103,6 @@ class FDSNDownloadManager(BaseModel):
                 self.time_range[0],
                 self.time_range[1],
             )
-
         await self.writer.prepare()
 
         self._stats.start_time = datetime_now()
@@ -131,7 +130,7 @@ class FDSNDownloadManager(BaseModel):
 
             date = self.time_range[0]
             while date + timedelta(days=1) <= self.time_range[1]:
-                for channel_selector in self.channel_selection:
+                for channel_selector in self.channel_priorities:
                     station_chunks = []
                     for channel in station.get_channels(
                         date,
@@ -202,13 +201,13 @@ class FDSNDownloadManager(BaseModel):
                     continue
                 available_stations.append(station.nsl)
 
-            self.metadata.mkdir(parents=True, exist_ok=True)
+            self.metadata_path.mkdir(parents=True, exist_ok=True)
             for network, stations in groupby(
                 available_stations, key=lambda x: x.network
             ):
                 stations = list(stations)
                 logger.info(
-                    "Downloading metadata for network %s, %d stations",
+                    "Downloading metadata for network %s (%d stations)",
                     network,
                     len(stations),
                 )
@@ -217,7 +216,7 @@ class FDSNDownloadManager(BaseModel):
                     self.time_range[0],
                     self.time_range[1],
                 )
-                metadata_file = self.metadata / f"{network}.xml"
+                metadata_file = self.metadata_path / f"{network}.xml"
                 metadata_file.write_text(data)
 
         logger.info("Metadata download completed successfully.")

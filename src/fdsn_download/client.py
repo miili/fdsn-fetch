@@ -14,7 +14,7 @@ from rich.progress import Progress, TaskID
 
 from fdsn_download.models.station import Channel, Stations, parse_stations
 from fdsn_download.stats import Stats
-from fdsn_download.utils import NSL, datetime_now, human_readable_bytes
+from fdsn_download.utils import NSL, ByteSizeStr, datetime_now, human_readable_bytes
 
 if TYPE_CHECKING:
     from rich.table import Table
@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 MB = 1024 * 1024
+HEADERS = {"User-Agent": "FDSN-Download-Client/1.0"}
 
 
 def _clean_params(params: dict[str, Any]) -> None:
@@ -146,7 +147,7 @@ class FDSNClientStats(Stats):
             "Server",
             f"[bold]{self._client.url if self._client else 'N/A'}[/bold]"
             f" ↓ {self.get_download_speed().human_readable()}/s"
-            f" ({self._client.n_worker if self._client else '?'} worker)",
+            f" ({self._client.n_workers if self._client else '?'} worker)",
         )
         table.add_row(
             "Stations",
@@ -168,22 +169,22 @@ class FDSNClient(BaseModel):
         ge=1.0,
         description="Timeout for HTTP requests in seconds",
     )
-    n_worker: int = Field(
+    n_workers: int = Field(
         default=8,
         ge=1,
         le=64,
         description="Maximum number of concurrent connections",
     )
+    chunk_size: ByteSizeStr = Field(
+        default=ByteSize(4 * MB),
+        ge=1 * MB,
+        description="Length of data chunks to download in bytes",
+    )
 
     available_stations: Stations = Field(
         default_factory=Stations,
-        description="List of stations fetched from the FDSN service",
-    )
-
-    chunk_size: int = Field(
-        default=4 * MB,
-        ge=1 * MB,
-        description="Length of data chunks to download in bytes",
+        description="List of available stations from the FDSN service",
+        exclude=True,
     )
 
     _stats: FDSNClientStats = PrivateAttr(default_factory=FDSNClientStats)
@@ -224,7 +225,7 @@ class FDSNClient(BaseModel):
             aiohttp.ClientSession(
                 base_url=str(self.url),
                 timeout=aiohttp.ClientTimeout(total=self.timeout),
-                headers={"User-Agent": "FDSN-Download-Client/1.0"},
+                headers=HEADERS,
             ) as client,
             client.get(
                 "/fdsnws/station/1/query",
@@ -270,8 +271,8 @@ class FDSNClient(BaseModel):
         async with (
             aiohttp.ClientSession(
                 base_url=str(self.url),
-                timeout=aiohttp.ClientTimeout(total=self.timeout),
-                headers={"User-Agent": "SDSCopyClient/1.0"},
+                timeout=aiohttp.ClientTimeout(sock_read=self.timeout),
+                headers=HEADERS,
             ) as client,
             client.get(
                 "/fdsnws/station/1/query",
@@ -381,7 +382,7 @@ class FDSNClient(BaseModel):
         logger.info(
             "Starting download from %s with %d workers",
             self.url,
-            self.n_worker,
+            self.n_workers,
         )
 
         try:
@@ -389,10 +390,10 @@ class FDSNClient(BaseModel):
                 base_url=str(self.url),
                 timeout=aiohttp.ClientTimeout(sock_read=self.timeout),
                 auto_decompress=True,
-                headers={"User-Agent": "SDSCopyClient/1.0"},
+                headers=HEADERS,
             )
             async with asyncio.TaskGroup() as tg:
-                for _ in range(self.n_worker):
+                for _ in range(self.n_workers):
                     tg.create_task(worker(client))
         finally:
             await client.close()

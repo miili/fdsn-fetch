@@ -54,7 +54,7 @@ class SDSWriterStats(Stats):
 
 
 class SDSWriter(BaseModel):
-    base_path: Path = Field(
+    sds_archive: Path = Field(
         default=Path("./data/"),
         description="Base path for storing SDS data",
     )
@@ -72,7 +72,7 @@ class SDSWriter(BaseModel):
 
     def has_channel(self, channel: DownloadChunk) -> bool:
         """Check if data for the given channel and date already exists."""
-        file_path = self.base_path / channel.sds_path()
+        file_path = self.sds_archive / channel.sds_path()
         return file_path.exists()
 
     def add_data(self, channel: DownloadChunk, data: bytes) -> None:
@@ -92,21 +92,27 @@ class SDSWriter(BaseModel):
 
     async def _add_data(self, channel: DownloadChunk, data: bytes) -> None:
         """Write the downloaded data to the SDS path."""
-        file_path = self.base_path / channel.sds_path(partial=True)
+        file_path = self.sds_archive / channel.sds_path(partial=True)
         file_path.parent.mkdir(parents=True, exist_ok=True)
 
         with open(file_path, "ab") as file:
             await asyncio.to_thread(file.write, data)
 
-    def _done(self, chunk: DownloadChunk) -> None:
+    async def _done(self, chunk: DownloadChunk) -> None:
         """Finalize the download for the channel."""
-        partial_file_path = self.base_path / chunk.sds_path(partial=True)
+        partial_file_path = self.sds_archive / chunk.sds_path(partial=True)
         if not partial_file_path.exists():
             return
 
-        file_path = self.base_path / chunk.sds_path()
+        file_path = self.sds_archive / chunk.sds_path()
         partial_file_path.rename(file_path)
         file_size = file_path.stat().st_size
+
+        elapsed = (
+            str(datetime_now() - chunk.start_time).split(".")[0]
+            if chunk.start_time
+            else "unknown"
+        )
 
         logger.info(
             "Finished %s.%s for %s (%s in %s)",
@@ -114,21 +120,22 @@ class SDSWriter(BaseModel):
             chunk.channel.code,
             chunk.date,
             human_readable_bytes(file_size),
-            datetime_now() - chunk.start_time if chunk.start_time else "unknown",
+            elapsed,
         )
         self._stats.total_files_saved += 1
         self._stats.total_bytes_written += file_size
+        self._stats.archive_size += file_size
 
         if self.squirrel_environment is not None:
             squirrel = self.get_squirrel()
-            squirrel.add(str(file_path))
+            await asyncio.to_thread(squirrel.add, str(file_path))
 
     async def start(self):
         try:
             while True:
                 channel, data = await self._consume_queue.get()
                 if data is None:
-                    self._done(channel)
+                    await self._done(channel)
                 else:
                     await self._add_data(channel, data)
                 self._consume_queue.task_done()
@@ -137,13 +144,13 @@ class SDSWriter(BaseModel):
 
     async def prepare(self) -> None:
         """Remove any partial files that may exist."""
-        logger.debug("Cleaning up partial files in %s", self.base_path)
-        for file in self.base_path.glob("**/*.partial"):
+        logger.debug("Cleaning up partial files in %s", self.sds_archive)
+        for file in self.sds_archive.glob("**/*.partial"):
             file.unlink()
             logger.warning("Removed partial file %s", file)
 
         for i_file, file in track(
-            enumerate(self.base_path.glob("**/*.[0-9]*")),
+            enumerate(self.sds_archive.glob("**/*.[0-9]*")),
             description="Scanning archive...",
             show_speed=False,
         ):

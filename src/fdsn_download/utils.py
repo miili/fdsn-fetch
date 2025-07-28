@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+from fnmatch import fnmatch
 from typing import Annotated, NamedTuple
 
-from pydantic import AfterValidator, BeforeValidator, ByteSize
+from pydantic import AfterValidator, BeforeValidator, ByteSize, PlainSerializer
 
 DATETIME_MAX = datetime.max.replace(tzinfo=timezone.utc)
 DATETIME_MIN = datetime.min.replace(tzinfo=timezone.utc)
@@ -49,6 +50,11 @@ AUX_CHANNELS = {
 }
 
 
+ByteSizeStr = Annotated[
+    ByteSize, PlainSerializer(ByteSize.human_readable, when_used="json")
+]
+
+
 class _NSL(NamedTuple):
     network: str
     station: str
@@ -57,6 +63,10 @@ class _NSL(NamedTuple):
     @property
     def pretty(self) -> str:
         return ".".join(self)
+
+    def _pretty_str(self) -> str:
+        """Return a pretty string representation of the NSL."""
+        return self.pretty
 
     def match(self, other: NSL) -> bool:
         """Check if the current NSL object matches another NSL object.
@@ -69,10 +79,16 @@ class _NSL(NamedTuple):
 
         """
         if self.location:
-            return self == other
+            return (
+                fnmatch(self.network, other.network)
+                and fnmatch(self.station, other.station)
+                and fnmatch(self.location, other.location)
+            )
         if self.station:
-            return self.network == other.network and self.station == other.station
-        return self.network == other.network
+            return fnmatch(self.network, other.network) and fnmatch(
+                self.station, other.station
+            )
+        return fnmatch(self.network, other.network)
 
     @classmethod
     def parse(cls, nsl: str | NSL | list[str] | tuple[str, str, str]) -> NSL:
@@ -138,7 +154,25 @@ class _NSL(NamedTuple):
         return self
 
 
-NSL = Annotated[_NSL, BeforeValidator(_NSL.parse), AfterValidator(_NSL._check)]
+NSL = Annotated[
+    _NSL,
+    BeforeValidator(_NSL.parse),
+    AfterValidator(_NSL._check),
+    PlainSerializer(_NSL._pretty_str),
+]
+
+
+def _parse_date(value: str | date) -> date | str:
+    """Parse a date from a string or date object."""
+    return date_today() if value == "today" else value
+
+
+def _serialize_date(value: date) -> str:
+    """Serialize a date to a string in ISO format."""
+    return "today" if value == date_today() else value.isoformat()
+
+
+Date = Annotated[date, BeforeValidator(_parse_date), PlainSerializer(_serialize_date)]
 
 
 def datetime_now() -> datetime:
