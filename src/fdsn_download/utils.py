@@ -162,6 +162,31 @@ NSL = Annotated[
 ]
 
 
+class NSLC(NamedTuple):
+    network: str
+    station: str
+    location: str
+    channel: str
+
+    @property
+    def pretty(self) -> str:
+        """Return a pretty string representation of the NSLC."""
+        return f"{self.network}.{self.station}.{self.location}.{self.channel}"
+
+    @classmethod
+    def from_nsl(cls, nsl: NSL, channel: str) -> NSLC:
+        """Create an NSLC object from an NSL and a channel string."""
+        return cls(nsl.network, nsl.station, nsl.location, channel)
+
+    @classmethod
+    def from_string(cls, nslc_str: str) -> NSLC:
+        """Create an NSLC object from a string representation."""
+        parts = nslc_str.split(".")
+        if len(parts) != 4:
+            raise ValueError(f"Invalid NSLC string: {nslc_str}")
+        return cls(*parts)
+
+
 def _parse_date(value: str | date) -> date | str:
     """Parse a date from a string or date object."""
     return date_today() if value == "today" else value

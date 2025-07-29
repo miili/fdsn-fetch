@@ -46,7 +46,7 @@ def download(
     verbose: Annotated[int, typer.Option("--verbose", "-v", count=True)] = 0,
 ) -> None:
     """Download data from FDSN to local SDS archive."""
-    client = FDSNDownloadManager.model_validate_json(file.read_text())
+    client = FDSNDownloadManager.load(file)
 
     log_level = logging.INFO
     if verbose >= 1:
@@ -79,6 +79,13 @@ def convert(
             help="Path to the output directory for SDS archive",
         ),
     ],
+    steim: Annotated[
+        int,
+        typer.Option(
+            ...,
+            help="STEIM compression type to use (1 or 2)",
+        ),
+    ] = 2,
     n_workers: Annotated[
         int,
         typer.Option(
@@ -88,7 +95,9 @@ def convert(
     ] = 64,
 ) -> None:
     """Convert existing MiniSEED files to SDS archive."""
-    asyncio.run(convert_sds(input, output))
+    if steim not in (1, 2):
+        raise typer.BadParameter("STEIM must be either 1 or 2")
+    asyncio.run(convert_sds(input, output, n_workers, steim))
 
 
 def main():

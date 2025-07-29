@@ -82,9 +82,20 @@ class FDSNDownloadManager(BaseModel):
         description="Maximum sampling rate for channels to be downloaded",
     )
 
+    _file: Path | None = PrivateAttr(default=None)
     _stats: FDSNDownloadManagerStats = PrivateAttr(
         default_factory=FDSNDownloadManagerStats
     )
+
+    @classmethod
+    def load(cls, file: Path) -> FDSNDownloadManager:
+        """Load the configuration from a JSON file."""
+        if not file.exists():
+            raise FileNotFoundError(f"Configuration file {file} does not exist")
+        data = file.read_text()
+        model = cls.model_validate_json(data)
+        model._file = file
+        return model
 
     @field_validator("time_range")
     @classmethod
@@ -154,7 +165,7 @@ class FDSNDownloadManager(BaseModel):
         logger.info("Discovered %d remote dayfiles", len(chunks))
         chunks_download = []
         for channel in track(chunks, description="Checking SDS archive..."):
-            if not self.writer.has_channel(channel):
+            if not self.writer.has_chunk(channel):
                 chunks_download.append(channel)
 
         i_downloaded = len(chunks) - len(chunks_download)
@@ -166,7 +177,7 @@ class FDSNDownloadManager(BaseModel):
         logger.info("Found %d dayfiles to download", len(chunks_download))
         return chunks_download
 
-    async def _download_client(self, client: FDSNClient, writer: SDSWriter):
+    async def _download_from_client(self, client: FDSNClient, writer: SDSWriter):
         """Download data for the specified client."""
         work = self.get_work(client)
         if not work:
@@ -185,8 +196,9 @@ class FDSNDownloadManager(BaseModel):
         writer_task = asyncio.create_task(self.writer.start())
         async with asyncio.TaskGroup() as tg:
             for client in self.clients:
-                tg.create_task(self._download_client(client, self.writer))
+                tg.create_task(self._download_from_client(client, self.writer))
         logger.info("All downloads completed successfully.")
+        await self.writer._consume_queue.join()
         writer_task.cancel()
         await self.download_metadata()
 

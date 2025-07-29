@@ -8,7 +8,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from fdsn_download.utils import _NSL, AUX_CHANNELS, DATETIME_MAX, NSL
+from fdsn_download.utils import _NSL, AUX_CHANNELS, DATETIME_MAX, NSL, NSLC
 
 logger = logging.getLogger(__name__)
 
@@ -84,12 +84,13 @@ class Channel(BaseModel):
 
     def sds_path(self, date: date) -> Path:
         """Return the SDS path for the channel on the given date."""
+        nsl = self.nsl
         return Path(
             SDS_TEMPLATE.format(
                 year=date.year,
-                network=self.nsl.network,
-                station=self.nsl.station,
-                location=self.nsl.location,
+                network=nsl.network,
+                station=nsl.station,
+                location=nsl.location,
                 channel=self.code,
                 julianday=date.timetuple().tm_yday,
             )
@@ -97,6 +98,11 @@ class Channel(BaseModel):
 
     def matches(self, selector: str) -> bool:
         return fnmatch(self.code, selector)
+
+    @property
+    def nslc(self) -> NSLC:
+        """Return the NSLC tuple for the channel."""
+        return NSLC.from_nsl(self.nsl, self.code)
 
     @classmethod
     def from_line(cls, line: str) -> Channel:
@@ -155,7 +161,11 @@ class Station(BaseModel):
                 continue
             if not channel.matches(channel_selector):
                 continue
-            if min_sampling_rate and channel.sampling_rate < min_sampling_rate:
+            if (
+                min_sampling_rate
+                and channel.sampling_rate
+                and channel.sampling_rate < min_sampling_rate
+            ):
                 logger.warning(
                     "Channel %s has sampling rate %.2f, which is below the minimum %.2f",
                     channel.code,
@@ -163,7 +173,11 @@ class Station(BaseModel):
                     min_sampling_rate,
                 )
                 continue
-            if max_sampling_rate and channel.sampling_rate > max_sampling_rate:
+            if (
+                max_sampling_rate
+                and channel.sampling_rate
+                and channel.sampling_rate > max_sampling_rate
+            ):
                 logger.warning(
                     "Channel %s has sampling rate %.2f, which is above the maximum %.2f",
                     channel.code,

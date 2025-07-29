@@ -4,7 +4,7 @@ import asyncio
 import logging
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncGenerator
 
@@ -14,7 +14,12 @@ from rich.progress import Progress, TaskID
 
 from fdsn_download.models.station import Channel, Stations, parse_stations
 from fdsn_download.stats import Stats
-from fdsn_download.utils import NSL, ByteSizeStr, datetime_now, human_readable_bytes
+from fdsn_download.utils import (
+    NSL,
+    ByteSizeStr,
+    datetime_now,
+    human_readable_bytes,
+)
 
 if TYPE_CHECKING:
     from rich.table import Table
@@ -31,7 +36,20 @@ def _clean_params(params: dict[str, Any]) -> None:
     """Remove empty values from the parameters dictionary."""
     for key in list(params.keys()):
         if not params[key]:
-            del params[key]
+            params.pop(key, None)
+
+
+def get_error_str(error_code: int) -> str:
+    """Return a human-readable error message based on the error code."""
+    if error_code == 404:
+        return "Not Found"
+    if error_code == 429:
+        return "Too Many Requests"
+    if error_code == 400:
+        return "Bad Request"
+    if error_code == 500:
+        return "Internal Server Error"
+    return f"Error {error_code}"
 
 
 @dataclass
@@ -40,7 +58,6 @@ class DownloadChunk:
 
     channel: Channel
     date: date
-    start_time: datetime | None = None
 
     def sds_path(self, partial: bool = False) -> Path:
         """Return the SDS path for the channel on the specified date."""
@@ -180,6 +197,11 @@ class FDSNClient(BaseModel):
         ge=1 * MB,
         description="Length of data chunks to download in bytes",
     )
+    rate_limit: int = Field(
+        default=50,
+        ge=1,
+        description="Requests per second limit for the FDSN service, 0 for no limit",
+    )
 
     available_stations: Stations = Field(
         default_factory=Stations,
@@ -308,31 +330,46 @@ class FDSNClient(BaseModel):
         }
         _clean_params(params)
         loop = asyncio.get_running_loop()
+        start_time = datetime_now()
 
         async with client.get(
             "/fdsnws/dataselect/1/query",
             params=params,
             compress=True,
+            raise_for_status=True,
         ) as response:
             self._stats.n_requests += 1
-            try:
-                response.raise_for_status()
-            except aiohttp.ClientResponseError as e:
-                logger.error(
-                    "Failed to download %s.%s for %s: %d error",
-                    channel.nsl.pretty,
-                    channel.code,
-                    date,
-                    e.code,
-                )
-                return
+            rate_limit = response.headers.get("X-RateLimit-Limit", None)
+            if rate_limit is not None:
+                new_rate_limit = int(rate_limit)
+                if self.rate_limit != new_rate_limit:
+                    logger.warning(
+                        "Rate limit changed from %d to %d requests per second",
+                        self.rate_limit,
+                        new_rate_limit,
+                    )
+                    self.rate_limit = new_rate_limit
 
+            request_n_bytes = 0
             async for chunk in response.content.iter_chunked(self.chunk_size):
                 chunk_size = len(chunk)
+                request_n_bytes += chunk_size
                 self._stats.n_bytes_downloaded += chunk_size
                 self._stats.add_download_chunk(chunk_size, loop.time())
 
                 yield chunk
+
+        elapsed = datetime_now() - start_time
+        speed = request_n_bytes / elapsed.total_seconds()
+
+        logger.info(
+            "Finished download %s.%s for %s (%s ↓%s/s)",
+            channel.nsl.pretty,
+            channel.code,
+            date,
+            human_readable_bytes(request_n_bytes),
+            human_readable_bytes(speed),
+        )
 
     async def add_work(self, download: DownloadChunk) -> None:
         """Add a download task to the work queue."""
@@ -346,10 +383,35 @@ class FDSNClient(BaseModel):
 
         self._stats.start(self._work_queue.qsize())
 
+        rate_limiter = asyncio.Condition()
+
+        async def rate_limit_timer():
+            while True:
+                async with rate_limiter:
+                    rate_limiter.notify()
+                await asyncio.sleep(1.0 / self.rate_limit)
+
         async def worker(client: aiohttp.ClientSession) -> None:
             while not self._work_queue.empty():
                 chunk = await self._work_queue.get()
-                chunk.start_time = datetime_now()
+
+                if writer.remote_log.has_error(
+                    chunk.channel.nslc,
+                    chunk.date,
+                    self.url,
+                ):
+                    logger.warning(
+                        "Skipping %s.%s for %s: already logged as error",
+                        chunk.channel.nsl.pretty,
+                        chunk.channel.code,
+                        chunk.date,
+                    )
+                    self._work_queue.task_done()
+                    continue
+
+                async with rate_limiter:
+                    await rate_limiter.wait()
+
                 logger.info(
                     "Starting download %s.%s for %s",
                     chunk.channel.nsl.pretty,
@@ -364,11 +426,25 @@ class FDSNClient(BaseModel):
                         date=chunk.date,
                     ):
                         writer.add_data(chunk, data)
+                except aiohttp.ClientResponseError as e:
+                    logger.error(
+                        "Failed to download %s for %s: %s error",
+                        chunk.channel.nslc.pretty,
+                        date,
+                        get_error_str(e.code),
+                    )
+                    writer.remote_log.add_error(
+                        chunk.channel.nslc,
+                        chunk.date,
+                        self.url,
+                        e.code,
+                    )
+                    continue
+
                 except TimeoutError:
                     logger.error(
-                        "Failed to download %s.%s for %s: Remote timeout (%.1f s)",
-                        chunk.channel.nsl.pretty,
-                        chunk.channel.code,
+                        "Failed to download %s for %s: Remote timeout (%.1f s)",
+                        chunk.channel.nslc.pretty,
                         chunk.date,
                         self.timeout,
                     )
@@ -385,6 +461,7 @@ class FDSNClient(BaseModel):
             self.n_workers,
         )
 
+        rate_limit_task = asyncio.create_task(rate_limit_timer())
         try:
             client = aiohttp.ClientSession(
                 base_url=str(self.url),
@@ -397,5 +474,6 @@ class FDSNClient(BaseModel):
                     tg.create_task(worker(client))
         finally:
             await client.close()
+            rate_limit_task.cancel()
 
         logger.info("Download completed from %s", self.url)
