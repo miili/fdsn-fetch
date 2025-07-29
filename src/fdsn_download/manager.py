@@ -61,7 +61,7 @@ class FDSNDownloadManager(BaseModel):
         default={_NSL("2D", "", "")},
         description="List of NSL selections for stations to download",
     )
-    channel_priorities: set[str] = Field(
+    channel_priority: set[str] = Field(
         default={"HH[ZNE12]", "EH[ZNE12]"},
         description="List of channel codes to download",
     )
@@ -92,8 +92,7 @@ class FDSNDownloadManager(BaseModel):
         """Load the configuration from a JSON file."""
         if not file.exists():
             raise FileNotFoundError(f"Configuration file {file} does not exist")
-        data = file.read_text()
-        model = cls.model_validate_json(data)
+        model = cls.model_validate_json(file.read_text(), strict=True)
         model._file = file
         return model
 
@@ -141,7 +140,7 @@ class FDSNDownloadManager(BaseModel):
 
             date = self.time_range[0]
             while date + timedelta(days=1) <= self.time_range[1]:
-                for channel_selector in self.channel_priorities:
+                for channel_selector in self.channel_priority:
                     station_chunks = []
                     for channel in station.get_channels(
                         date,

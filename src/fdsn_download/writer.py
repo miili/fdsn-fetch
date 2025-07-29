@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -103,6 +104,12 @@ class SDSWriter(BaseModel):
     )
     _remote_log: RemoteLog = PrivateAttr(default_factory=RemoteLog)
     _squirrel: Squirrel | None = PrivateAttr(default=None)
+    _executor: ThreadPoolExecutor = PrivateAttr(
+        default_factory=lambda: ThreadPoolExecutor(
+            max_workers=4,
+            thread_name_prefix="SDSWriterExecutor",
+        )
+    )
 
     def has_chunk(self, channel: DownloadChunk) -> bool:
         """Check if data for the given channel and date already exists."""
@@ -134,9 +141,10 @@ class SDSWriter(BaseModel):
         file_path = self.sds_archive / channel.sds_path(partial=True)
         file_path.parent.mkdir(parents=True, exist_ok=True)
 
+        loop = asyncio.get_running_loop()
         async with _file_lock(file_path):
             with open(file_path, "ab") as file:
-                await asyncio.to_thread(file.write, data)
+                await loop.run_in_executor(self._executor, file.write, data)
 
     async def _done(self, chunk: DownloadChunk) -> None:
         """Finalize the download for the channel."""
@@ -202,3 +210,8 @@ class SDSWriter(BaseModel):
 
         remote_log = self.sds_archive / "remote_errors.log"
         self._remote_log.set_logfile(remote_log)
+
+        self._executor = ThreadPoolExecutor(
+            max_workers=self.write_theads,
+            thread_name_prefix="SDSWriterExecutor",
+        )

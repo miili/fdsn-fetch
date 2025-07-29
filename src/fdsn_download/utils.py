@@ -1,10 +1,16 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from fnmatch import fnmatch
 from typing import Annotated, NamedTuple
 
-from pydantic import AfterValidator, BeforeValidator, ByteSize, PlainSerializer
+from pydantic import (
+    AfterValidator,
+    BeforeValidator,
+    ByteSize,
+    PlainSerializer,
+    WrapValidator,
+)
 
 DATETIME_MAX = datetime.max.replace(tzinfo=timezone.utc)
 DATETIME_MIN = datetime.min.replace(tzinfo=timezone.utc)
@@ -187,17 +193,29 @@ class NSLC(NamedTuple):
         return cls(*parts)
 
 
-def _parse_date(value: str | date) -> date | str:
+def _parse_date(value: str | date, handler) -> date:
     """Parse a date from a string or date object."""
-    return date_today() if value == "today" else value
+    if value == "today":
+        return date_today()
+    if value == "yesterday":
+        return date_today() - timedelta(days=1)
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        return date.fromisoformat(value)
+    raise ValueError(f"Invalid date value: {value}")
 
 
 def _serialize_date(value: date) -> str:
     """Serialize a date to a string in ISO format."""
-    return "today" if value == date_today() else value.isoformat()
+    if value == date_today():
+        return "today"
+    if value == date_today() - timedelta(days=1):
+        return "yesterday"
+    return value.isoformat()
 
 
-Date = Annotated[date, BeforeValidator(_parse_date), PlainSerializer(_serialize_date)]
+Date = Annotated[date, WrapValidator(_parse_date), PlainSerializer(_serialize_date)]
 
 
 def datetime_now() -> datetime:

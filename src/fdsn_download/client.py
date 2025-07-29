@@ -430,7 +430,7 @@ class FDSNClient(BaseModel):
                     logger.error(
                         "Failed to download %s for %s: %s error",
                         chunk.channel.nslc.pretty,
-                        date,
+                        chunk.date,
                         get_error_str(e.code),
                     )
                     writer.remote_log.add_error(
