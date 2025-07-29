@@ -395,17 +395,18 @@ class FDSNClient(BaseModel):
             while not self._work_queue.empty():
                 chunk = await self._work_queue.get()
 
-                if writer.remote_log.has_error(
+                if remote_error := writer.remote_log.get_error(
                     chunk.channel.nslc,
                     chunk.date,
                     self.url,
                 ):
                     logger.warning(
-                        "Skipping %s.%s for %s: already logged as error",
-                        chunk.channel.nsl.pretty,
-                        chunk.channel.code,
+                        "Skipping %s for %s: logged as %s error",
+                        chunk.channel.nslc.pretty,
                         chunk.date,
+                        get_error_str(remote_error.error_code),
                     )
+                    self._stats.chunk_done(chunk)
                     self._work_queue.task_done()
                     continue
 
@@ -425,7 +426,7 @@ class FDSNClient(BaseModel):
                         channel=chunk.channel,
                         date=chunk.date,
                     ):
-                        writer.add_data(chunk, data)
+                        await writer.add_data(chunk, data)
                 except aiohttp.ClientResponseError as e:
                     logger.error(
                         "Failed to download %s for %s: %s error",
@@ -453,7 +454,7 @@ class FDSNClient(BaseModel):
                     self._stats.chunk_done(chunk)
                     self._work_queue.task_done()
 
-                writer.done(chunk)
+                await writer.done(chunk)
 
         logger.info(
             "Starting download from %s with %d workers",

@@ -57,12 +57,12 @@ class FDSNDownloadManager(BaseModel):
         default_factory=lambda: (date_today() - timedelta(days=7), date_today()),
         description="Time range for downloading data",
     )
-    station_selection: set[NSL] = Field(
-        default={_NSL("2D", "", "")},
+    station_selection: list[NSL] = Field(
+        default=[_NSL("2D", "", "")],
         description="List of NSL selections for stations to download",
     )
-    channel_priority: set[str] = Field(
-        default={"HH[ZNE12]", "EH[ZNE12]"},
+    channel_priority: list[str] = Field(
+        default=["HH[ZNE12]", "EH[ZNE12]"],
         description="List of channel codes to download",
     )
     station_blacklist: set[NSL] = Field(
@@ -192,13 +192,10 @@ class FDSNDownloadManager(BaseModel):
         """Download data using all configured clients."""
         await self.prepare()
 
-        writer_task = asyncio.create_task(self.writer.start())
         async with asyncio.TaskGroup() as tg:
             for client in self.clients:
                 tg.create_task(self._download_from_client(client, self.writer))
         logger.info("All downloads completed successfully.")
-        await self.writer._consume_queue.join()
-        writer_task.cancel()
         await self.download_metadata()
 
     async def download_metadata(self):

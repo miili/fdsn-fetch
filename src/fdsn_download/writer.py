@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -92,24 +91,9 @@ class SDSWriter(BaseModel):
         description="Path to the Squirrel environment, if applicable",
     )
 
-    write_theads: int = Field(
-        default=4,
-        ge=1,
-        description="Number of threads to use for writing SDS files",
-    )
-
     _stats: SDSWriterStats = PrivateAttr(default_factory=SDSWriterStats)
-    _consume_queue: asyncio.Queue[tuple[DownloadChunk, bytes | None]] = PrivateAttr(
-        default_factory=asyncio.Queue
-    )
     _remote_log: RemoteLog = PrivateAttr(default_factory=RemoteLog)
     _squirrel: Squirrel | None = PrivateAttr(default=None)
-    _executor: ThreadPoolExecutor = PrivateAttr(
-        default_factory=lambda: ThreadPoolExecutor(
-            max_workers=4,
-            thread_name_prefix="SDSWriterExecutor",
-        )
-    )
 
     def has_chunk(self, channel: DownloadChunk) -> bool:
         """Check if data for the given channel and date already exists."""
@@ -121,14 +105,6 @@ class SDSWriter(BaseModel):
         """Return the remote log for this writer."""
         return self._remote_log
 
-    def add_data(self, channel: DownloadChunk, data: bytes) -> None:
-        """Add a channel to the download queue."""
-        self._consume_queue.put_nowait((channel, data))
-
-    def done(self, channel: DownloadChunk) -> None:
-        """Mark the download for the channel as done."""
-        self._consume_queue.put_nowait((channel, None))
-
     def get_squirrel(self) -> Squirrel:
         if self._squirrel is None:
             from pyrocko.squirrel import Squirrel
@@ -136,17 +112,16 @@ class SDSWriter(BaseModel):
             self._squirrel = Squirrel(env=str(self.squirrel_environment))
         return self._squirrel
 
-    async def _add_data(self, channel: DownloadChunk, data: bytes) -> None:
+    async def add_data(self, channel: DownloadChunk, data: bytes) -> None:
         """Write the downloaded data to the SDS path."""
         file_path = self.sds_archive / channel.sds_path(partial=True)
         file_path.parent.mkdir(parents=True, exist_ok=True)
 
-        loop = asyncio.get_running_loop()
         async with _file_lock(file_path):
             with open(file_path, "ab") as file:
-                await loop.run_in_executor(self._executor, file.write, data)
+                await asyncio.to_thread(file.write, data)
 
-    async def _done(self, chunk: DownloadChunk) -> None:
+    async def done(self, chunk: DownloadChunk) -> None:
         """Finalize the download for the channel."""
         partial_file_path = self.sds_archive / chunk.sds_path(partial=True)
         if not partial_file_path.exists():
@@ -165,25 +140,6 @@ class SDSWriter(BaseModel):
         if self.squirrel_environment is not None:
             squirrel = self.get_squirrel()
             await asyncio.to_thread(squirrel.add, str(file_path))
-
-    async def start(self):
-        logger.info("Starting SDSWriter with %d threads", self.write_theads)
-
-        async def write_worker(worker_id: int):
-            try:
-                while True:
-                    channel, data = await self._consume_queue.get()
-                    if data is None:
-                        await self._done(channel)
-                    else:
-                        await self._add_data(channel, data)
-                    self._consume_queue.task_done()
-            except asyncio.CancelledError:
-                logger.debug("SDS Worker %d stopped", worker_id)
-
-        async with asyncio.TaskGroup() as tg:
-            for i_worker in range(self.write_theads):
-                tg.create_task(write_worker(i_worker))
 
     async def prepare(self) -> None:
         """Remove any partial files that may exist."""
@@ -210,8 +166,3 @@ class SDSWriter(BaseModel):
 
         remote_log = self.sds_archive / "remote_errors.log"
         self._remote_log.set_logfile(remote_log)
-
-        self._executor = ThreadPoolExecutor(
-            max_workers=self.write_theads,
-            thread_name_prefix="SDSWriterExecutor",
-        )

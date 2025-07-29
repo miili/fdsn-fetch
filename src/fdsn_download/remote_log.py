@@ -17,7 +17,7 @@ LOG_ERRORS = {404}
 class RemoteError(NamedTuple):
     nslc: NSLC
     date: date
-    remote_url: str
+    host: str
     error_code: int
     time: datetime
 
@@ -25,17 +25,17 @@ class RemoteError(NamedTuple):
         """Return a CSV representation of the error."""
         return (
             f"{self.nslc.pretty},{self.date},"
-            f"{self.remote_url},{self.error_code},{self.time.isoformat()}"
+            f"{self.host},{self.error_code},{self.time.isoformat()}"
         )
 
     @classmethod
     def from_csv(cls, csv_line: str) -> RemoteError:
         """Create a RemoteError from a CSV line."""
-        nslc_str, date_, remote_url, error_code, time = csv_line.split(",")
+        nslc_str, date_, host, error_code, time = csv_line.split(",")
         return cls(
             nslc=NSLC.from_string(nslc_str),
             date=date.fromisoformat(date_),
-            remote_url=remote_url,
+            host=host,
             error_code=int(error_code),
             time=datetime.fromisoformat(time),
         )
@@ -81,18 +81,29 @@ class RemoteLog:
         if not remote.host:
             raise ValueError("Remote URL must have a host")
         error = RemoteError(nslc, date, remote.host, error_code, datetime_now())
+        self.errors.append(error)
         if self.file:
             with self.file.open("a") as f:
                 f.write(error.as_csv() + "\n")
-        self.errors.append(error)
 
     def has_error(self, nslc: NSLC, date: date, remote: HttpUrl) -> bool:
         """Check if there is a remote error for the given NSLC and remote URL."""
         if not remote.host:
             raise ValueError("Remote URL must have a host")
         return any(
-            error.nslc == nslc
-            and error.remote_url == remote.host
-            and error.date == date
+            error.nslc == nslc and error.host == remote.host and error.date == date
             for error in self.errors
         )
+
+    def get_error(self, nslc: NSLC, date: date, remote: HttpUrl) -> RemoteError | None:
+        """Get the remote error for the given NSLC and remote URL."""
+        if not remote.host:
+            raise ValueError("Remote URL must have a host")
+        error = [
+            error
+            for error in self.errors
+            if error.nslc == nslc and error.host == remote.host and error.date == date
+        ]
+        if error:
+            return error[0]
+        return None
