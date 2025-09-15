@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -9,7 +10,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncGenerator
 
 import aiohttp
-from pydantic import BaseModel, ByteSize, Field, HttpUrl, PrivateAttr, computed_field
+from pydantic import (
+    BaseModel,
+    ByteSize,
+    Field,
+    FilePath,
+    HttpUrl,
+    PrivateAttr,
+    computed_field,
+)
 from rich.progress import Progress, TaskID
 
 from fdsn_download.models.station import Channel, Stations, parse_stations
@@ -202,6 +211,10 @@ class FDSNClient(BaseModel):
         ge=1,
         description="Requests per second limit for the FDSN service, 0 for no limit",
     )
+    pgp_key: FilePath | None = Field(
+        default=None,
+        description="Path to a PGP key for FDSN authentication",
+    )
 
     available_stations: Stations = Field(
         default_factory=Stations,
@@ -242,11 +255,13 @@ class FDSNClient(BaseModel):
         _clean_params(params)
 
         logger.info("Preparing FDSN service: %s", self.url)
+        middlewares = await self._get_auth_middlewares()
 
         async with (
             aiohttp.ClientSession(
                 base_url=str(self.url),
                 timeout=aiohttp.ClientTimeout(total=self.timeout),
+                middlewares=middlewares,
                 headers=HEADERS,
             ) as client,
             client.get(
@@ -264,6 +279,34 @@ class FDSNClient(BaseModel):
             self.available_stations.n_stations,
             self.url,
         )
+
+    async def _get_auth_middlewares(self) -> tuple[aiohttp.DigestAuthMiddleware, ...]:
+        if self.pgp_key is None:
+            return ()
+        logger.info("Preparing PGP authentication using key: %s", self.pgp_key)
+        key = self.pgp_key.read_text()
+        if not re.search(r"^BEGIN PGP (?:SIGNED )?MESSAGE", key, re.MULTILINE):
+            raise ValueError(f"Invalid PGP key file: {self.pgp_key}")
+
+        logger.debug("Receiving username and password for token")
+        async with (
+            aiohttp.ClientSession(
+                base_url=str(self.url),
+                timeout=aiohttp.ClientTimeout(total=self.timeout),
+                headers=HEADERS,
+            ) as client,
+            client.post(
+                "/fdsnws/dataselect/1/auth",
+                data=key,
+            ) as response,
+        ):
+            response.raise_for_status()
+            user, password = (await response.text()).split(":", 1)
+            logger.info(
+                "Received username and password for token: %s / %s", user, password
+            )
+
+        return (aiohttp.DigestAuthMiddleware(user, password),)
 
     async def download_metadata(
         self,
@@ -332,8 +375,10 @@ class FDSNClient(BaseModel):
         loop = asyncio.get_running_loop()
         start_time = datetime_now()
 
+        query = "query" if self.pgp_key is None else "queryauth"
+
         async with client.get(
-            "/fdsnws/dataselect/1/query",
+            f"/fdsnws/dataselect/1/{query}",
             params=params,
             compress=True,
             raise_for_status=True,
