@@ -11,7 +11,7 @@ from fdsn_download.utils import NSLC, datetime_now
 
 logger = logging.getLogger(__name__)
 
-LOG_ERRORS = {404}
+LOG_ERROR_CODES = {404}
 
 
 class RemoteError(NamedTuple):
@@ -65,7 +65,7 @@ class RemoteLog:
                     n_loaded += 1
             logger.info("Loaded %d remote errors from %s", n_loaded, file)
         if not file.parent.exists():
-            raise FileNotFoundError(f"Log file directory {file.parent} does not exist.")
+            file.parent.mkdir(parents=True, exist_ok=True)
         self.file = file
 
     def add_error(
@@ -76,7 +76,7 @@ class RemoteLog:
         error_code: int,
     ) -> None:
         """Add an error to the log."""
-        if error_code not in LOG_ERRORS:
+        if error_code not in LOG_ERROR_CODES:
             return
         if not remote.host:
             raise ValueError("Remote URL must have a host")

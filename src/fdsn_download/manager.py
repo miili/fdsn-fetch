@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, Field, PrivateAttr, field_validator
 from rich.progress import track
 
-from fdsn_download.client import DownloadChunk, FDSNClient
+from fdsn_download.client import DownloadDayfile, FDSNClient
 from fdsn_download.stats import Stats
 from fdsn_download.utils import _NSL, NSL, Date, date_today, datetime_now
 from fdsn_download.writer import SDSWriter
@@ -129,8 +129,8 @@ class FDSNDownloadManager(BaseModel):
                 available_stations.append(station.nsl)
         return available_stations
 
-    def get_work(self, client: FDSNClient) -> list[DownloadChunk]:
-        chunks: list[DownloadChunk] = []
+    def get_work(self, client: FDSNClient) -> list[DownloadDayfile]:
+        chunks: list[DownloadDayfile] = []
 
         for station in client.available_stations:
             if not any(nsl.match(station.nsl) for nsl in self.station_selection):
@@ -148,12 +148,16 @@ class FDSNDownloadManager(BaseModel):
                         self.min_sampling_rate,
                         self.max_sampling_rate,
                     ):
-                        station_chunks.append(DownloadChunk(channel=channel, date=date))
+                        station_chunks.append(
+                            DownloadDayfile(channel=channel, date=date)
+                        )
                     if len(station_chunks) < self.min_channels_per_station:
                         logger.debug(
-                            "Station %s has only %d channels",
+                            "Station %s has %d channels for %s, need at least %d",
                             station.nsl.pretty,
                             len(station_chunks),
+                            date,
+                            self.min_channels_per_station,
                         )
                         continue
                     chunks.extend(station_chunks)

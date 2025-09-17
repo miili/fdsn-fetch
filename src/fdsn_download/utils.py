@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from fnmatch import fnmatch
+from pathlib import Path
 from typing import Annotated, NamedTuple
 
 from pydantic import (
@@ -58,6 +59,19 @@ AUX_CHANNELS = {
 
 ByteSizeStr = Annotated[
     ByteSize, PlainSerializer(ByteSize.human_readable, when_used="json")
+]
+
+
+def _expand_path(value: Path) -> Path:
+    """Expand a path, resolving user and relative paths."""
+    if not value.exists():
+        raise FileNotFoundError(f"Path {value} does not exist.")
+    return value.expanduser().resolve()
+
+
+FilePath = Annotated[
+    Path,
+    AfterValidator(_expand_path),
 ]
 
 

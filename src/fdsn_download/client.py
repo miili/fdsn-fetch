@@ -5,7 +5,7 @@ import logging
 import re
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncGenerator
 
@@ -14,7 +14,6 @@ from pydantic import (
     BaseModel,
     ByteSize,
     Field,
-    FilePath,
     HttpUrl,
     PrivateAttr,
     computed_field,
@@ -26,6 +25,7 @@ from fdsn_download.stats import Stats
 from fdsn_download.utils import (
     NSL,
     ByteSizeStr,
+    FilePath,
     datetime_now,
     human_readable_bytes,
 )
@@ -40,6 +40,15 @@ logger = logging.getLogger(__name__)
 MB = 1024 * 1024
 HEADERS = {"User-Agent": "FDSN-Download-Client/1.0"}
 
+ERRORS = {
+    400: "Bad Request",
+    401: "Unauthorized (check EIDA token)",
+    403: "Forbidden",
+    404: "Not Found",
+    429: "Too Many Requests",
+    500: "Internal Server Error",
+}
+
 
 def _clean_params(params: dict[str, Any]) -> None:
     """Remove empty values from the parameters dictionary."""
@@ -50,19 +59,11 @@ def _clean_params(params: dict[str, Any]) -> None:
 
 def get_error_str(error_code: int) -> str:
     """Return a human-readable error message based on the error code."""
-    if error_code == 404:
-        return "Not Found"
-    if error_code == 429:
-        return "Too Many Requests"
-    if error_code == 400:
-        return "Bad Request"
-    if error_code == 500:
-        return "Internal Server Error"
-    return f"Error {error_code}"
+    return ERRORS.get(error_code, f"Error {error_code}")
 
 
 @dataclass
-class DownloadChunk:
+class DownloadDayfile:
     """Data structure to hold download information."""
 
     channel: Channel
@@ -74,6 +75,12 @@ class DownloadChunk:
         if partial:
             return file_name.parent / (file_name.name + ".partial")
         return file_name
+
+    def timestamp_range(self) -> tuple[float, float]:
+        """Return the start and end timestamps for the day."""
+        tmin = datetime.combine(self.date, time=time(), tzinfo=timezone.utc).timestamp()
+        tmax = tmin + 24 * 60 * 60
+        return tmin, tmax
 
 
 class FDSNClientStats(Stats):
@@ -125,12 +132,12 @@ class FDSNClientStats(Stats):
     def add_download_chunk(self, n_bytes: int, time: float) -> None:
         self._received_chunks.append((time, n_bytes))
 
-    def chunk_add(self, channel: DownloadChunk) -> None:
+    def chunk_add(self, channel: DownloadDayfile) -> None:
         """Add a work item to the statistics."""
         self._station_work_count[channel.channel.nsl] += 1
         self.n_chunks_total += 1
 
-    def chunk_done(self, channel: DownloadChunk) -> None:
+    def chunk_done(self, channel: DownloadDayfile) -> None:
         """Mark a work item as done."""
         self._station_work_count[channel.channel.nsl] -= 1
         self.n_completed += 1
@@ -172,7 +179,7 @@ class FDSNClientStats(Stats):
         table.add_row(
             "Server",
             f"[bold]{self._client.url if self._client else 'N/A'}[/bold]"
-            f" ↓ {self.get_download_speed().human_readable()}/s"
+            f" ↓{self.get_download_speed().human_readable()}/s"
             f" ({self._client.n_workers if self._client else '?'} worker)",
         )
         table.add_row(
@@ -211,9 +218,9 @@ class FDSNClient(BaseModel):
         ge=1,
         description="Requests per second limit for the FDSN service, 0 for no limit",
     )
-    pgp_key: FilePath | None = Field(
+    eida_key: FilePath | None = Field(
         default=None,
-        description="Path to a PGP key for FDSN authentication",
+        description="Path to a EIDA PGP key for FDSNWS authentication",
     )
 
     available_stations: Stations = Field(
@@ -225,7 +232,7 @@ class FDSNClient(BaseModel):
     _stats: FDSNClientStats = PrivateAttr(default_factory=FDSNClientStats)
     _client: aiohttp.ClientSession | None = PrivateAttr(None)
 
-    _work_queue: asyncio.Queue[DownloadChunk] = PrivateAttr(
+    _work_queue: asyncio.Queue[DownloadDayfile] = PrivateAttr(
         default_factory=asyncio.Queue
     )
 
@@ -255,13 +262,11 @@ class FDSNClient(BaseModel):
         _clean_params(params)
 
         logger.info("Preparing FDSN service: %s", self.url)
-        middlewares = await self._get_auth_middlewares()
 
         async with (
             aiohttp.ClientSession(
                 base_url=str(self.url),
                 timeout=aiohttp.ClientTimeout(total=self.timeout),
-                middlewares=middlewares,
                 headers=HEADERS,
             ) as client,
             client.get(
@@ -281,12 +286,12 @@ class FDSNClient(BaseModel):
         )
 
     async def _get_auth_middlewares(self) -> tuple[aiohttp.DigestAuthMiddleware, ...]:
-        if self.pgp_key is None:
+        if self.eida_key is None:
             return ()
-        logger.info("Preparing PGP authentication using key: %s", self.pgp_key)
-        key = self.pgp_key.read_text()
+        logger.info("Preparing PGP authentication using key: %s", self.eida_key)
+        key = self.eida_key.read_text()
         if not re.search(r"^BEGIN PGP (?:SIGNED )?MESSAGE", key, re.MULTILINE):
-            raise ValueError(f"Invalid PGP key file: {self.pgp_key}")
+            raise ValueError(f"Invalid PGP key file: {self.eida_key}")
 
         logger.debug("Receiving username and password for token")
         async with (
@@ -375,7 +380,7 @@ class FDSNClient(BaseModel):
         loop = asyncio.get_running_loop()
         start_time = datetime_now()
 
-        query = "query" if self.pgp_key is None else "queryauth"
+        query = "query" if self.eida_key is None else "queryauth"
 
         async with client.get(
             f"/fdsnws/dataselect/1/{query}",
@@ -416,7 +421,7 @@ class FDSNClient(BaseModel):
             human_readable_bytes(speed),
         )
 
-    async def add_work(self, download: DownloadChunk) -> None:
+    async def add_work(self, download: DownloadDayfile) -> None:
         """Add a download task to the work queue."""
         await self._work_queue.put(download)
         self._stats.chunk_add(download)
@@ -509,9 +514,11 @@ class FDSNClient(BaseModel):
 
         rate_limit_task = asyncio.create_task(rate_limit_timer())
         try:
+            middleware = await self._get_auth_middlewares()
             client = aiohttp.ClientSession(
                 base_url=str(self.url),
                 timeout=aiohttp.ClientTimeout(sock_read=self.timeout),
+                middlewares=middleware,
                 auto_decompress=True,
                 headers=HEADERS,
             )

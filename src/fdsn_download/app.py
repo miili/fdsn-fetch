@@ -52,7 +52,7 @@ def download(
     if verbose >= 1:
         log_level = logging.DEBUG
 
-    logging.basicConfig(level=log_level)
+    logging.root.setLevel(log_level)
 
     async def run_download() -> None:
         download = asyncio.create_task(client.download())
