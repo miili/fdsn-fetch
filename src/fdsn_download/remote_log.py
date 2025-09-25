@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime
+from hashlib import sha1
 from pathlib import Path
 from typing import NamedTuple
 
@@ -12,6 +13,10 @@ from fdsn_download.utils import NSLC, datetime_now
 logger = logging.getLogger(__name__)
 
 LOG_ERROR_CODES = {404}
+
+
+def _hash_error(nslc: NSLC, date: date, host: str) -> bytes:
+    return sha1(f"{nslc.pretty}{date}{host}".encode("utf-8")).digest()
 
 
 class RemoteError(NamedTuple):
@@ -27,6 +32,10 @@ class RemoteError(NamedTuple):
             f"{self.nslc.pretty},{self.date},"
             f"{self.host},{self.error_code},{self.time.isoformat()}"
         )
+
+    def hash(self) -> bytes:
+        """Return a hash of the error for quick comparison."""
+        return _hash_error(self.nslc, self.date, self.host)
 
     @classmethod
     def from_csv(cls, csv_line: str) -> RemoteError:
@@ -44,8 +53,12 @@ class RemoteError(NamedTuple):
 class RemoteLog:
     """Log of remote files with errors."""
 
+    errors: list[RemoteError]
+    _error_hash: dict[bytes, int]
+
     def __init__(self, log_file: Path | None = None):
         self.errors: list[RemoteError] = []
+        self._error_hash: dict[bytes, int] = {}
         if log_file and log_file.exists():
             self.set_logfile(log_file)
 
@@ -61,7 +74,9 @@ class RemoteLog:
             n_loaded = 0
             with file.open("r") as f:
                 for line in f:
-                    self.errors.append(RemoteError.from_csv(line.strip()))
+                    error = RemoteError.from_csv(line.strip())
+                    self.errors.append(error)
+                    self._error_hash[error.hash()] = error.error_code
                     n_loaded += 1
             logger.info("Loaded %d remote errors from %s", n_loaded, file)
         if not file.parent.exists():
@@ -82,28 +97,13 @@ class RemoteLog:
             raise ValueError("Remote URL must have a host")
         error = RemoteError(nslc, date, remote.host, error_code, datetime_now())
         self.errors.append(error)
+        self._error_hash[error.hash()] = error_code
         if self.file:
             with self.file.open("a") as f:
                 f.write(error.as_csv() + "\n")
 
-    def has_error(self, nslc: NSLC, date: date, remote: HttpUrl) -> bool:
-        """Check if there is a remote error for the given NSLC and remote URL."""
-        if not remote.host:
-            raise ValueError("Remote URL must have a host")
-        return any(
-            error.nslc == nslc and error.host == remote.host and error.date == date
-            for error in self.errors
-        )
-
-    def get_error(self, nslc: NSLC, date: date, remote: HttpUrl) -> RemoteError | None:
+    def get_error(self, nslc: NSLC, date: date, remote: HttpUrl) -> int | None:
         """Get the remote error for the given NSLC and remote URL."""
         if not remote.host:
             raise ValueError("Remote URL must have a host")
-        error = [
-            error
-            for error in self.errors
-            if error.nslc == nslc and error.host == remote.host and error.date == date
-        ]
-        if error:
-            return error[0]
-        return None
+        return self._error_hash.get(_hash_error(nslc, date, remote.host), None)

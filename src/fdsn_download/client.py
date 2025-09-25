@@ -445,19 +445,20 @@ class FDSNClient(BaseModel):
             while not self._work_queue.empty():
                 chunk = await self._work_queue.get()
 
-                if remote_error := writer.remote_log.get_error(
+                if logged_error := writer.remote_log.get_error(
                     chunk.channel.nslc,
                     chunk.date,
                     self.url,
                 ):
                     logger.warning(
-                        "Skipping %s for %s: logged as %s error",
+                        "Skipping %s for %s: %s error logged",
                         chunk.channel.nslc.pretty,
                         chunk.date,
-                        get_error_str(remote_error.error_code),
+                        get_error_str(logged_error),
                     )
                     self._stats.chunk_done(chunk)
                     self._work_queue.task_done()
+                    await asyncio.sleep(0.0)
                     continue
 
                 async with rate_limiter:

@@ -62,7 +62,7 @@ class FDSNDownloadManager(BaseModel):
         description="List of NSL selections for stations to download",
     )
     channel_priority: list[str] = Field(
-        default=["HH[ZNE12]", "EH[ZNE12]"],
+        default=["HH[ZNE12]", "EH[ZNE12]", "HN[ZNE12]"],
         description="List of channel codes to download",
     )
     station_blacklist: set[NSL] = Field(
@@ -71,7 +71,7 @@ class FDSNDownloadManager(BaseModel):
     )
     min_channels_per_station: int = Field(
         default=3,
-        description="Minimum number of channels per station to download",
+        description="Minimum number of channels required per day.",
     )
     min_sampling_rate: float = Field(
         default=100.0,
