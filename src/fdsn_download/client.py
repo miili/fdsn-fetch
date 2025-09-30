@@ -16,6 +16,7 @@ from pydantic import (
     Field,
     HttpUrl,
     PrivateAttr,
+    ValidationError,
     computed_field,
 )
 from rich.progress import Progress, TaskID
@@ -25,6 +26,7 @@ from fdsn_download.stats import Stats
 from fdsn_download.utils import (
     NSL,
     ByteSizeStr,
+    EIDADetails,
     FilePath,
     datetime_now,
     human_readable_bytes,
@@ -47,6 +49,9 @@ ERRORS = {
     404: "Not Found",
     429: "Too Many Requests",
     500: "Internal Server Error",
+    502: "Bad Gateway",
+    503: "Service Unavailable",
+    504: "Gateway Timeout",
 }
 
 
@@ -293,6 +298,26 @@ class FDSNClient(BaseModel):
         if not re.search(r"^BEGIN PGP (?:SIGNED )?MESSAGE", key, re.MULTILINE):
             raise ValueError(f"Invalid PGP key file: {self.eida_key}")
 
+        for line in key.splitlines():
+            try:
+                token_details = EIDADetails.model_validate_json(line)
+                break
+            except ValidationError:
+                continue
+        else:
+            raise ValidationError("No valid EIDA token found in the key file")
+
+        if token_details.valid_until < datetime_now():
+            raise ValueError(
+                f"EIDA token expired on {token_details.valid_until.isoformat()}"
+            )
+
+        logger.info(
+            "Using EIDA token for %s valid until %s",
+            token_details.mail,
+            token_details.valid_until,
+        )
+
         logger.debug("Receiving username and password for token")
         async with (
             aiohttp.ClientSession(
@@ -479,17 +504,26 @@ class FDSNClient(BaseModel):
                     ):
                         await writer.add_data(chunk, data)
                 except aiohttp.ClientResponseError as e:
+                    error_code = getattr(e, "code", 400)
                     logger.error(
                         "Failed to download %s for %s: %s error",
                         chunk.channel.nslc.pretty,
                         chunk.date,
-                        get_error_str(e.code),
+                        get_error_str(error_code),
                     )
                     writer.remote_log.add_error(
                         chunk.channel.nslc,
                         chunk.date,
                         self.url,
-                        e.code,
+                        error_code,
+                    )
+                    continue
+                except aiohttp.ClientPayloadError as e:
+                    logger.error(
+                        "Failed to download %s for %s: Payload error: %s",
+                        chunk.channel.nslc.pretty,
+                        chunk.date,
+                        e,
                     )
                     continue
 
@@ -514,8 +548,8 @@ class FDSNClient(BaseModel):
         )
 
         rate_limit_task = asyncio.create_task(rate_limit_timer())
+        middleware = await self._get_auth_middlewares()
         try:
-            middleware = await self._get_auth_middlewares()
             client = aiohttp.ClientSession(
                 base_url=str(self.url),
                 timeout=aiohttp.ClientTimeout(sock_read=self.timeout),

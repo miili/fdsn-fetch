@@ -7,7 +7,6 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field, PrivateAttr
@@ -18,7 +17,7 @@ from rich.progress import track
 from fdsn_download.client import DownloadDayfile
 from fdsn_download.remote_log import RemoteLog
 from fdsn_download.stats import Stats
-from fdsn_download.utils import human_readable_bytes
+from fdsn_download.utils import human_readable_bytes, wait_for_path
 
 if TYPE_CHECKING:
     from pyrocko.squirrel import Squirrel
@@ -172,26 +171,36 @@ class SDSWriter(BaseModel):
             except NoData:
                 continue
 
+        if not traces:
+            logger.warning(
+                "No valid traces to save for %s.%s on %s",
+                download.channel.nsl.pretty,
+                download.channel.code,
+                download.date,
+            )
+            partial_file_path.unlink()
+            return
+
         logger.debug(
             "Saving traces with STEIM%d compression and record length %d",
             self.steim_compression,
             self.record_length,
         )
-        with NamedTemporaryFile() as tmp_file:
-            await asyncio.to_thread(
-                save,
-                traces,
-                tmp_file.name,
-                format="mseed",
-                steim=self.steim_compression,
-                record_length=self.record_length,
-                check_overlaps=False,
-            )
-            tmp_file.flush()
-            tmp_file_path = Path(tmp_file.name)
-            tmp_file_path.replace(final_file_path)
+        await asyncio.to_thread(
+            save,
+            traces,
+            str(final_file_path),
+            format="mseed",
+            steim=self.steim_compression,
+            record_length=self.record_length,
+            check_overlaps=False,
+        )
 
         partial_file_path.unlink()
+
+        # This is a safeguard to ensure the file is fully written
+        # Some storage systems may have delays
+        await wait_for_path(final_file_path, timeout=30.0)
         file_size = final_file_path.stat().st_size
 
         self._stats.total_files_saved += 1
@@ -224,7 +233,7 @@ class SDSWriter(BaseModel):
 
             self._stats.archive_size += file_size
 
-            if i_file % 1000 == 0:
+            if i_file % 500 == 0:
                 await asyncio.sleep(0.0)
 
         remote_log = self.sds_archive / "remote_errors.log"

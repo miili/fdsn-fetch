@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from datetime import date, datetime, timedelta, timezone
 from fnmatch import fnmatch
 from pathlib import Path
@@ -7,11 +9,14 @@ from typing import Annotated, NamedTuple
 
 from pydantic import (
     AfterValidator,
+    BaseModel,
     BeforeValidator,
     ByteSize,
     PlainSerializer,
     WrapValidator,
 )
+
+logger = logging.getLogger(__name__)
 
 DATETIME_MAX = datetime.max.replace(tzinfo=timezone.utc)
 DATETIME_MIN = datetime.min.replace(tzinfo=timezone.utc)
@@ -255,3 +260,43 @@ def human_readable_bytes(size: int | float, decimal: bool = False) -> str:
 
     """
     return ByteSize(size).human_readable(decimal=decimal)
+
+
+async def wait_for_path(
+    path: Path,
+    timeout: float = 10,
+    interval: float = 0.2,
+) -> None:
+    """Wait for a file to appear on disk.
+
+    Some filesystems may have delays in reporting file presence.
+
+    Args:
+    path: Path to the file to wait for.
+    timeout: Maximum time to wait in seconds.
+    interval: Time between checks in seconds.
+
+    Raises:
+    asyncio.TimeoutError: If the file does not appear within the timeout.
+    """
+
+    async def await_path() -> None:
+        start = datetime_now()
+        while True:
+            if path.exists():
+                logger.debug("Path %s appeared after %s", path, datetime_now() - start)
+                return
+            await asyncio.sleep(interval)
+
+    try:
+        await asyncio.wait_for(await_path(), timeout=timeout)
+    except asyncio.TimeoutError as e:
+        raise FileNotFoundError(
+            f"Path {path} did not appear within {timeout} seconds"
+        ) from e
+
+
+class EIDADetails(BaseModel):
+    mail: str
+    valid_until: datetime
+    issued: datetime
