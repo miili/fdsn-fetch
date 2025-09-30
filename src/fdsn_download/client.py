@@ -506,11 +506,13 @@ class FDSNClient(BaseModel):
                 except aiohttp.ClientResponseError as e:
                     error_code = getattr(e, "code", 400)
                     logger.error(
-                        "Failed to download %s for %s: %s error",
+                        "Failed to download %s for %s: %s error (%s)",
                         chunk.channel.nslc.pretty,
                         chunk.date,
                         get_error_str(error_code),
+                        e.message,
                     )
+                    logger.debug("Failed request URL: %s", e.request_info.real_url)
                     writer.remote_log.add_error(
                         chunk.channel.nslc,
                         chunk.date,
